@@ -10,6 +10,8 @@
 #define THREADTOOLS_H
 
 #include <limits.h>
+#include <condition_variable>
+#include <mutex>
 #include <shared_mutex>
 
 #include "tier0/platform.h"
@@ -49,10 +51,6 @@
 #define THREAD_MUTEX_TRACING_SUPPORTED
 #if defined(_WIN32) && defined(_DEBUG)
 #define THREAD_MUTEX_TRACING_ENABLED
-#endif
-
-#ifdef _WIN32
-typedef void *HANDLE;
 #endif
 
 #ifdef _X360
@@ -794,7 +792,89 @@ public:
 	}
 };
 
-class CThreadMultiWaitEvent
+//-----------------------------------------------------------------------------
+// A mutex shared by the processes that open it with the same name, locked with Wait()
+//-----------------------------------------------------------------------------
+class PLATFORM_CLASS CThreadCrossProcessMutex : public CThreadSyncObject
+{
+public:
+	// bAllowAllUsers lets the processes of other users open it
+	CThreadCrossProcessMutex( const char *pszName = NULL, bool bAllowAllUsers = false );
+
+	bool Release();
+
+#ifdef PLATFORM_WINDOWS
+	bool TryLock( const char *pFileName, int nLine, uint32 dwTimeout );
+	void Unlock( const char *pFileName = NULL, int nLine = -1 );
+#else
+	bool TryLock( const char *pFileName, int nLine, uint32 dwTimeout ) { return Wait( dwTimeout ); }
+	void Unlock( const char *pFileName = NULL, int nLine = -1 ) { Release(); }
+#endif
+
+	bool AssertOwnedByCurrentThread() const { return true; }
+	void SetTrace( bool ) {}
+
+private:
+	CThreadCrossProcessMutex( const CThreadCrossProcessMutex & );
+	CThreadCrossProcessMutex &operator=( const CThreadCrossProcessMutex & );
+};
+
+//-----------------------------------------------------------------------------
+// Objects that ThreadMultiWait can wait on together
+//-----------------------------------------------------------------------------
+#ifdef _WIN32
+typedef HANDLE ThreadMultiWaitItem_t;
+#else
+struct pollfd;
+typedef pollfd ThreadMultiWaitItem_t;
+#endif
+
+enum ThreadMultiWaitObjectFlags_t
+{
+	THREAD_MULTI_WAIT_NONE = 0,
+	THREAD_MULTI_WAIT_SEMAPHORE = (1 << 0),
+	THREAD_MULTI_WAIT_AUTO_RESET_EVENT = (1 << 1),
+	THREAD_MULTI_WAIT_MANUAL_RESET_EVENT = (1 << 2),
+};
+
+struct ThreadMultiWaitExtra_t
+{
+	// ThreadMultiWaitObjectFlags_t
+	uint32 nFlags;
+};
+
+// A copy of the objects to wait on, made by ThreadMultiWaitObjectSetCreate
+struct ThreadMultiWaitObjectSet_t
+{
+	ThreadMultiWaitItem_t *m_pItems;
+	ThreadMultiWaitExtra_t *m_pExtra;
+	int m_nItems;
+#ifdef PLATFORM_POSIX
+	// The epoll instance that watches m_pItems
+	int m_hEpoll;
+#endif
+};
+
+class CThreadMultiWaitObject
+{
+public:
+	DLL_CLASS_IMPORT CThreadMultiWaitObject();
+	DLL_CLASS_IMPORT ~CThreadMultiWaitObject();
+
+	// Releases a semaphore or sets an event
+	DLL_CLASS_IMPORT void Signal();
+
+protected:
+#ifdef _WIN32
+	HANDLE m_hEventFd;
+#else
+	int m_hEventFd;
+#endif
+	// ThreadMultiWaitObjectFlags_t
+	uint32 m_nExtraFlags;
+};
+
+class CThreadMultiWaitEvent : public CThreadMultiWaitObject
 {
 public:
 	DLL_CLASS_IMPORT CThreadMultiWaitEvent( bool bManualReset = false );
@@ -802,14 +882,96 @@ public:
 
 	DLL_CLASS_IMPORT void Set();
 	DLL_CLASS_IMPORT void Reset();
+};
+
+class CThreadMultiWaitSemaphore : public CThreadMultiWaitObject
+{
+public:
+	DLL_CLASS_IMPORT CThreadMultiWaitSemaphore();
+	DLL_CLASS_IMPORT ~CThreadMultiWaitSemaphore();
+
+	DLL_CLASS_IMPORT void Release();
+};
+
+// Builds a set from the objects, which must outlive it, to wait on them repeatedly
+PLATFORM_INTERFACE ThreadMultiWaitObjectSet_t *ThreadMultiWaitObjectSetCreate( const CThreadMultiWaitObject **ppObjects, int nObjects );
+PLATFORM_OVERLOAD ThreadMultiWaitObjectSet_t *ThreadMultiWaitObjectSetCreate( const ThreadMultiWaitItem_t *pItems, const ThreadMultiWaitExtra_t *pExtra, int nItems );
+PLATFORM_INTERFACE void ThreadMultiWaitObjectSetDestroy( ThreadMultiWaitObjectSet_t *pSet );
+PLATFORM_INTERFACE int ThreadMultiWaitObjectSetGetCount( ThreadMultiWaitObjectSet_t *pSet );
+
+enum ThreadMultiWaitFlags_t
+{
+	THREAD_MULTI_WAIT_FOR_ANY = 0,
+	// Only Windows waits for all of them; elsewhere any signalled object ends the wait
+	THREAD_MULTI_WAIT_FOR_ALL = (1 << 0),
+};
+
+// Waits on pSet, or pItems and pExtra when pSet is nullptr. nFlags is a combination of ThreadMultiWaitFlags_t.
+// Returns how many were signalled, with their bits set in pSignalled, 0 on timeout or -1 on failure.
+PLATFORM_INTERFACE int ThreadMultiWait( ThreadMultiWaitObjectSet_t *pSet, ThreadMultiWaitItem_t *pItems, ThreadMultiWaitExtra_t *pExtra, int nItems, uint32 nFlags, uint64 *pSignalled, uint32 nMillis );
+
+//-----------------------------------------------------------------------------
+// Blocks threads until the given number of them have arrived, then lets them
+// all through and starts over
+//-----------------------------------------------------------------------------
+class CThreadBarrier
+{
+public:
+	DLL_CLASS_IMPORT CThreadBarrier( uint32 nThreads );
+	DLL_CLASS_IMPORT ~CThreadBarrier();
+
+	DLL_CLASS_IMPORT void ArriveAndWait();
 
 private:
-#ifdef _WIN32
-	HANDLE m_hEvent;
-#else
-	int m_nEventFd;
-#endif
-	int m_nType; // AMNOTE: 2 for auto-reset, 4 for manual-reset
+	CThreadBarrier( const CThreadBarrier & );
+	CThreadBarrier &operator=( const CThreadBarrier & );
+
+	struct BarrierState_t
+	{
+		uint32 m_nThreadCount;
+		uint32 m_nThreadsToArrive;
+		// Completed rounds, the waiting threads leave once it changes
+		uint32 m_nRound;
+		std::mutex m_Mutex;
+		std::condition_variable m_RoundComplete;
+	};
+
+	BarrierState_t *m_pState;
+};
+
+//-----------------------------------------------------------------------------
+// Lets a thread pause background work: workers wrap each piece of work in
+// OnBeginBackgroundWork, which waits while paused, and OnEndBackgroundWork
+//-----------------------------------------------------------------------------
+class CThreadBackgroundWorkGate
+{
+public:
+	DLL_CLASS_IMPORT CThreadBackgroundWorkGate();
+	DLL_CLASS_IMPORT ~CThreadBackgroundWorkGate();
+
+	DLL_CLASS_IMPORT void OnBeginBackgroundWork();
+	DLL_CLASS_IMPORT void OnEndBackgroundWork();
+	// For workers to end their work early
+	DLL_CLASS_IMPORT bool PauseRequested() const;
+
+	// Waits until no background work is running
+	DLL_CLASS_IMPORT void PauseWork();
+	DLL_CLASS_IMPORT void ResumeWork();
+
+private:
+	CThreadBackgroundWorkGate( const CThreadBackgroundWorkGate & );
+	CThreadBackgroundWorkGate &operator=( const CThreadBackgroundWorkGate & );
+
+	struct GateState_t
+	{
+		std::mutex m_Mutex;
+		// Notified when the active work runs out and when work is resumed
+		std::condition_variable m_StateChanged;
+		int m_nActiveWork;
+		bool m_bPauseRequested;
+	};
+
+	GateState_t *m_pState;
 };
 
 
