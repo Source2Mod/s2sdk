@@ -223,8 +223,12 @@ struct CVarCreationBase_t
 #define FCVAR_EXECUTE_PER_TICK		(1ull<<29)
 #define FCVAR_SNAPSHOT_IGNORED		(1ull<<30) // TakeConVarSnapshot and ResetConVarsToSnapshot ignores cvars with this flag set
 #define FCVAR_DEFENSIVE				(1ull<<32)
+#define FCVAR_EXECUTE_IMMEDIATELY	(1ull<<33) // Not queued inside a __beginseq batch
 
 #define FCVAR_GAMEINFO_CANNOT_OVERRIDE (1ull<<34) // Code defaults can't be overridden from gameinfo
+
+#define FCVAR_VCONSOLE_NO_CHANGE_NOTIFY	(1ull<<36)
+#define FCVAR_ENUM_VALUE			(1ull<<37) // The value is a schema enum
 
 //-----------------------------------------------------------------------------
 // Called when a ConCommand needs to execute
@@ -291,6 +295,9 @@ class CCommand
 public:
 	CCommand();
 	CCommand( int nArgC, const char **ppArgV );
+	// Tokenizes the other's command string again, so the arguments point into this one's buffers
+	CCommand( const CCommand &other ) : CCommand() { *this = other; }
+	CCommand &operator=( const CCommand &other );
 	bool Tokenize( CUtlString pCommand, characterset_t *pBreakSet = nullptr );
 	void Reset();
 
@@ -968,7 +975,7 @@ public:
 	bool UpdateMaxValueString( const char *value ) { return HasMaxValue() && TypeTraits()->StringToValue( value, m_maxValue ); }
 
 	// Sets default value by copying it, doesn't need to be allocated
-	void SetDefaultValue( CVValue_t *value ) { TypeTraits()->Copy( m_defaultValue, value ); }
+	void SetDefaultValue( CVValue_t *value ) { TypeTraits()->Copy( m_defaultValue, *value ); }
 
 	// AMNOTE: Expects you to manually allocate its value and for it to be alive while it's used by the cvar
 	// Also you should be responsible for clearing memory on cleanup, by default game uses CCvar memory allocator for this

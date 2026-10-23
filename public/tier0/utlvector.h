@@ -63,9 +63,6 @@ public:
 	CUtlVectorBase( T* pMemory, I allocationCount, I numElements = 0 );
 	~CUtlVectorBase();
 
-	CUtlVectorBase( CUtlVectorBase&& src );
-	CUtlVectorBase<T, I, A>& operator=( CUtlVectorBase<T, I, A> &&other );
-	
 	// Copy the array.
 	CUtlVectorBase<T, I, A>& operator=( const CUtlVectorBase<T, I, A> &other );
 
@@ -126,12 +123,11 @@ public:
 	I InsertMultipleBefore( I elem, I num, const T *pToCopy );
 	I InsertMultipleAfter( I elem, I num );
 
-	// Calls RemoveAll() then AddMultipleToTail.
+	// Adds or removes elements at the tail, keeping the others.
 	void SetSize( I size );
 	void SetCount( I count );
-	void SetCountNonDestructively( I count ); //sets count by adding or removing elements to tail TODO: This should probably be the default behavior for SetCount
 	
-	// Calls SetSize and copies each element.
+	// Calls SetSize and copies each element, none for a NULL array.
 	void CopyArray( const T *pArray, I size );
 
 	// Fast swap
@@ -244,6 +240,12 @@ class CUtlVector : public CUtlVectorBase< T, I, A >
 public:
 
 	using BaseClass::BaseClass;
+
+	// Moves swap the memory; the other vectors on CUtlVectorBase copy when assigned from an rvalue
+	CUtlVector( CUtlVector &&src )										{ this->Swap( src ); }
+	CUtlVector<T, I, A>& operator=( CUtlVector<T, I, A> &&other )		{ this->Swap( other ); return *this; }
+
+	CUtlVector<T, I, A>& operator=( const CUtlVector<T, I, A> &other ) = default;
 };
 
 //-----------------------------------------------------------------------------
@@ -340,22 +342,11 @@ inline CUtlVectorBase<T, I, A>::~CUtlVectorBase()
 }
 
 template< typename T, class I, class A >
-inline CUtlVectorBase<T, I, A>::CUtlVectorBase( CUtlVectorBase&& src ) :
-	CUtlVectorBase( 0, 0 )
-{
-	Swap( src );
-}
-
-template< typename T, class I, class A >
-inline CUtlVectorBase<T, I, A>& CUtlVectorBase<T, I, A>::operator=( CUtlVectorBase<T, I, A> &&other )
-{
-	Swap( other );
-	return *this;
-}
-
-template< typename T, class I, class A >
 inline CUtlVectorBase<T, I, A>& CUtlVectorBase<T, I, A>::operator=( const CUtlVectorBase<T, I, A> &other )
 {
+	if ( this == &other )
+		return *this;
+
 	I nCount = other.Count();
 	SetSize( nCount );
 	for ( I i = 0; i < nCount; i++ )
@@ -900,8 +891,11 @@ I CUtlVectorBase<T, I, A>::InsertMultipleAfter( I elem, I num )
 template< typename T, class I, class A >
 void CUtlVectorBase<T, I, A>::SetCount( I count )
 {
-	RemoveAll();
-	AddMultipleToTail( count );
+	I delta = count - m_Size;
+	if ( delta > 0 )
+		AddMultipleToTail( delta );
+	else if ( delta < 0 )
+		RemoveMultipleFromTail( -delta );
 }
 
 template< typename T, class I, class A >
@@ -911,20 +905,15 @@ inline void CUtlVectorBase<T, I, A>::SetSize( I size )
 }
 
 template< typename T, class I, class A >
-void CUtlVectorBase<T, I, A>::SetCountNonDestructively( I count )
-{
-	I delta = count - m_Size;
-	if(delta > 0) AddMultipleToTail( delta );
-	else if(delta < 0) RemoveMultipleFromTail( -delta );
-}
-
-template< typename T, class I, class A >
 void CUtlVectorBase<T, I, A>::CopyArray( const T *pArray, I size )
 {
 	// Can't insert something that's in the list... reallocation may hose us
 	Assert( (Base() == NULL) || !pArray || (Base() >= (pArray + size)) || (pArray >= (Base() + Count()) ) ); 
 
 	SetSize( size );
+	if ( !pArray )
+		return;
+
 	for( I i=0; i < size; i++ )
 	{
 		(*this)[i] = pArray[i];
