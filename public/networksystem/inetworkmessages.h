@@ -190,13 +190,13 @@ public:
 
 	virtual bool Serialize(bf_write &pBuf, const CNetMessage *pData) = 0;
 
-	// AMNOTE: nUnk001 is new in 14197 (passed through to the unserializer); pErrorReason may be nullptr
-	virtual bool UnserializeMessageInternal( bf_read &pBuf, CNetMessage *pData, int nUnk001, CUtlString *pErrorReason ) = 0;
+	// AMNOTE: nBufType is new in 14197, unreliable messages (BUF_UNRELIABLE) are unserialized differently; pErrorReason may be nullptr
+	virtual bool UnserializeMessageInternal( bf_read &pBuf, CNetMessage *pData, NetChannelBufType_t nBufType, CUtlString *pErrorReason ) = 0;
 	virtual bool SerializeMessageInternal( bf_write &pBuf, const CNetMessage *pData ) = 0;
 
 	// Returns nullptr if failed to unserialize, reason is written to err_reason
-	// AMNOTE: nUnk001 is new in 14197, passed through to UnserializeMessageInternal
-	virtual CNetMessage *UnserializeFromStream( bf_read &pBuf, int nUnk001, CUtlString &err_reason ) = 0;
+	// AMNOTE: nBufType is new in 14197, passed through to UnserializeMessageInternal
+	virtual CNetMessage *UnserializeFromStream( bf_read &pBuf, NetChannelBufType_t nBufType, CUtlString &err_reason ) = 0;
 
 	// AMNOTE: SerializeAbstract, AllocateAndCopyConstructNetMessageAbstract and DeallocateNetMessageAbstract were
 	// removed in 14197. Allocate with INetworkMessageInternal::AllocateMessage(), copy with CNetMessage::CopyConstruct()
